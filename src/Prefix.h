@@ -1,7 +1,9 @@
 #pragma once
 
 #include "utrace.h"
-
+#if defined(ANDROID) || defined(__ANDROID__)
+#include "mimalloc.h"
+#endif
 #define LILITH_UNITY_UNREAL_INSIGHTS 1
 
 #ifdef _WIN32
@@ -62,6 +64,10 @@
 #include <unordered_map>
 #include <vector>
 #include <atomic>
+
+#if defined(ANDROID) || defined(__ANDROID__)
+#include "mimalloc-override.h"
+#endif
 
 typedef uint8_t     UInt8;
 typedef uint16_t    UInt16;
@@ -148,7 +154,11 @@ public:
   }
 };
 
-
+#ifdef _MSC_VER
+#else
+#define strnicmp strncasecmp
+#define stricmp strcasecmp
+#endif
 
 class string : public std::basic_string<char, std::char_traits<char>, Allocator<char>>
 {
@@ -158,6 +168,18 @@ public:
   string(const char *ptr, size_t size) : super(ptr, size) {}
   string() : super() {}
 
+  bool equals(const string& rhs, bool case_sensitive) const 
+  {
+      if (case_sensitive)
+      {
+          return !strcmp(c_str(), rhs.c_str());
+      }
+      else
+      {
+          return !stricmp(c_str(), rhs.c_str());
+      }
+   }
+
   const char *operator*() const { return c_str(); }
 };
 
@@ -165,8 +187,21 @@ string FormatString(const char* fmt, ...);
 
 struct string_ref : public std::string_view
 {
+  string_ref(const char *data) : std::string_view(data, strlen(data)) {}
   string_ref(const char *data, size_t size) : std::string_view(data, size) {}
   explicit operator string() const { return string(data(), size()); }
+
+  bool equals(const string_ref& rhs, bool case_sensitive = true) const 
+  {
+      if (case_sensitive)
+      {
+          return rhs.size() == size() && strncmp(data(), rhs.data(), size()) == 0;
+      }
+      else
+      {
+          return rhs.size() == size() && strnicmp(data(), rhs.data(), size()) == 0;
+      }
+   }
 };
 
 template <typename K, typename V, typename H = std::hash<K>,
@@ -209,6 +244,9 @@ private:
   Block* head;
   Block* list;
 };
+
+void DisableMallocHook(bool disable);
+bool IsMallocHookDisabled();
 
 struct UTRACE_API Thread {
     Thread();

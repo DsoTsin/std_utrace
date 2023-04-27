@@ -124,9 +124,10 @@ FBacktracer::FBacktracer()
 	Modules = (FModule*)malloc(sizeof(FModule) * ModulesCapacity);
 
 	Instance = this;
-#if 0
-	CallstackTracer = (FCallstackTracer*) alignalloc(sizeof(FCallstackTracer), alignof(FCallstackTracer));
-	CallstackTracer = new(CallstackTracer) FCallstackTracer();
+#if 1
+	CallstackTracer = new FCallstackTracer;
+	//(FCallstackTracer*) alignalloc(sizeof(FCallstackTracer), alignof(FCallstackTracer));
+	//CallstackTracer = new(CallstackTracer) FCallstackTracer();
 #endif
 }
 
@@ -142,9 +143,21 @@ FBacktracer::~FBacktracer()
 #endif
 }
 
+static std::mutex __lock;
+static std::mutex __lock2;
+
 ////////////////////////////////////////////////////////////////////////////////
 FBacktracer* FBacktracer::Get()
 {
+	if (Instance == nullptr)
+	{
+		std::lock_guard<std::mutex> _(__lock);
+		if (Instance == nullptr)
+		{
+			std::lock_guard<std::mutex> _2(__lock2);
+			Instance = new FBacktracer;
+		}
+	}
 	return Instance;
 }
 

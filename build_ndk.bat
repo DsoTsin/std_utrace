@@ -1,0 +1,1 @@
+%ANDROID_NDK_HOME%\ndk-build NDK_PROJECT_PATH=%~dp0\src APP_BUILD_SCRIPT=%~dp0\src\Android.mk NDK_APPLICATION_MK=%~dp0\src\Application.mk

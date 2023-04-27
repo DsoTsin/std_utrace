@@ -4,52 +4,13 @@
 #include "Runtime/TraceLog/Public/Trace/Detail/LogScope.h"
 
 #ifdef __cplusplus
-extern "C" {
-#endif
-    EXPORT_COREMODULE void utrace_mem_init();
-    /**
-     * Trace an allocation event.
-     * @param Address Address of allocation
-     * @param Size Size of allocation
-     * @param Alignment Alignment of the allocation
-     * @param RootHeap Which root heap this belongs to (system memory, video memory etc)
-     */
-    EXPORT_COREMODULE void utrace_mem_alloc(UInt64 Address, UInt64 Size, UInt32 Alignment);
-
-    /**
-     * Trace a free event.
-     * @param Address Address of the allocation being freed
-     * @param RootHeap Which root heap this belongs to (system memory, video memory etc)
-     */
-    EXPORT_COREMODULE void utrace_mem_free(UInt64 Address);
-
-    /**
-     * Trace a free related to a reallocation event.
-     * @param Address Address of the allocation being freed
-     * @param RootHeap Which root heap this belongs to (system memory, video memory etc)
-     */
-    EXPORT_COREMODULE void utrace_mem_realloc_free(UInt64 Address);
-
-    /** Trace an allocation related to a reallocation event.
-     * @param Address Address of allocation
-     * @param NewSize Size of allocation
-     * @param Alignment Alignment of the allocation
-     * @param RootHeap Which root heap this belongs to (system memory, video memory etc)
-     */
-    EXPORT_COREMODULE void utrace_mem_realloc_alloc(UInt64 Address, UInt64 NewSize, UInt32 Alignment);
-
-    EXPORT_COREMODULE SInt32 utrace_mem_announce_tag(SInt32 Tag, SInt32 ParentTag, const char* Display);
-    EXPORT_COREMODULE SInt32 utrace_mem_name_tag(const char* TagName);
-    EXPORT_COREMODULE SInt32 utrace_mem_get_active_tag();
-#ifdef __cplusplus
-}
 #if UE_TRACE_ENABLED
 class FMemScope
 {
 public:
     EXPORT_COREMODULE FMemScope(SInt32 InTag, bool bShouldActivate = true);
     //EXPORT_COREMODULE FMemScope(ELLMTag InTag, bool bShouldActivate = true);
-    //EXPORT_COREMODULE FMemScope(const class FName& InName, bool bShouldActivate = true);
+    EXPORT_COREMODULE FMemScope(const utrace_string& InName, bool bShouldActivate = true);
     //EXPORT_COREMODULE FMemScope(const UE::LLMPrivate::FTagData* TagData, bool bShouldActivate = true);
     EXPORT_COREMODULE ~FMemScope();
 private:
@@ -57,6 +18,9 @@ private:
     UE::Trace::Private::FScopedLogScope Inner;
     SInt32 PrevTag;
 };
+
+static_assert(sizeof(FMemScope) == 8, "");
+static_assert(alignof(FMemScope) == 4, "");
 
 template<typename TagType>
 class FDefaultMemScope : public FMemScope
@@ -76,6 +40,9 @@ public:
 private:
     UE::Trace::Private::FScopedLogScope Inner;
 };
+
+static_assert(sizeof(FMemScopePtr) <= 4, "");
+static_assert(alignof(FMemScopePtr) == 1, "");
 
 #define UE_MEMSCOPE(InTag)				FMemScope PREPROCESSOR_JOIN(MemScope,__LINE__)(InTag);
 #define UE_MEMSCOPE_PTR(InPtr)			FMemScopePtr PREPROCESSOR_JOIN(MemPtrScope,__LINE__)((uint64)InPtr);

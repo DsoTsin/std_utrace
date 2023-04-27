@@ -7,7 +7,7 @@
 
 #include "UTrace/GPUTrace.h"
 #include "UTrace/FileTrace.h"
-#include "UTrace/CounterTrace.h"
+//#include "UTrace/CounterTrace.h"
 #include "UTrace/MemoryTrace.h"
 
 #ifdef _MSC_VER
@@ -30,11 +30,21 @@
 #include "Backtracer.h"
 
 #if PLATFORM_ANDROID
+#include <jni.h>
+#include <sys/un.h>
 #include <sys/socket.h>
+#include <sys/system_properties.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <sys/un.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <dlfcn.h>
+#include <link.h>
+
+#include "Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xhook.h"
+
+typedef void (*Fn_dl_notify)(int, const char* so_name, const char* realpath, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum, void*);
+typedef void (*Fn_dl_register_notification)(Fn_dl_notify notify, void*);
 
 core::string GetAndroidProp(const char* propName)
 {
@@ -285,6 +295,35 @@ UE_TRACE_EVENT_BEGIN(Logging, LogMessage, NoSync)
     UE_TRACE_EVENT_FIELD(uint8_t[], FormatArgs)
 UE_TRACE_EVENT_END()
 
+UE_TRACE_CHANNEL(MetadataChannel);
+
+UE_TRACE_EVENT_BEGIN(MetadataStack, ClearScope, NoSync)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(MetadataStack, SaveStack)
+	UE_TRACE_EVENT_FIELD(UInt32, Id)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(MetadataStack, RestoreStack)
+	UE_TRACE_EVENT_FIELD(UInt32, Id)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_CHANNEL(AssetMetadataChannel);
+
+UE_TRACE_EVENT_BEGIN(Strings, StaticString, NoSync|Definition64bit)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, DisplayWide)
+	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, DisplayAnsi)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Strings, FName, NoSync|Definition32bit)
+	UE_TRACE_EVENT_FIELD(UE::Trace::WideString, DisplayWide)
+	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, DisplayAnsi)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Metadata, Asset)
+    // TODO: UE_TRACE_EVENT_REFERENCE_FIELD(Strings, FName, Name)
+    // TODO: UE_TRACE_EVENT_REFERENCE_FIELD(Strings, FName, Class)
+UE_TRACE_EVENT_END()
 
 UE_TRACE_CHANNEL(FileChannel)
 
@@ -380,18 +419,42 @@ UE_TRACE_EVENT_BEGIN(Memory, AllocVideo)
     UE_TRACE_EVENT_FIELD(UInt32, Size)
     UE_TRACE_EVENT_FIELD(UInt8, AlignmentPow2_SizeLower)
 UE_TRACE_EVENT_END()
-
-UE_TRACE_EVENT_BEGIN(Memory, Free)
+/*
+// void *addr, size_t length, int prot, int flags, int fd, off_t offset
+UE_TRACE_EVENT_BEGIN(Memory, Mmap)
     UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt64, InAddress)
+    UE_TRACE_EVENT_FIELD(UInt64, Length)
+    UE_TRACE_EVENT_FIELD(UInt32, Prot)
+    UE_TRACE_EVENT_FIELD(UInt32, Flags)
+    UE_TRACE_EVENT_FIELD(SInt32, Fd)
+    UE_TRACE_EVENT_FIELD(UInt64, Offset)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
     UE_TRACE_EVENT_FIELD(UInt8, RootHeap)
 UE_TRACE_EVENT_END()
-
+*/
+UE_TRACE_EVENT_BEGIN(Memory, Free)
+    UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
+    UE_TRACE_EVENT_FIELD(UInt8, RootHeap)
+UE_TRACE_EVENT_END()
+/*
+//void *addr, size_t length
+UE_TRACE_EVENT_BEGIN(Memory, Munmap)
+    UE_TRACE_EVENT_FIELD(SInt32, Result)
+    UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt64, Length)
+    UE_TRACE_EVENT_FIELD(UInt8, RootHeap)
+UE_TRACE_EVENT_END()
+*/
 UE_TRACE_EVENT_BEGIN(Memory, FreeSystem)
     UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Memory, FreeVideo)
     UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Memory, ReallocAlloc)
@@ -411,39 +474,40 @@ UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Memory, ReallocFree)
     UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
     UE_TRACE_EVENT_FIELD(UInt8, RootHeap)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Memory, ReallocFreeSystem)
     UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
 UE_TRACE_EVENT_END()
 
-//UE_TRACE_CHANNEL_DEFINE(CallstackChannel)
-//
-//UE_TRACE_EVENT_BEGIN(Memory, CallstackSpec, NoSync)
-//	UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
-//	UE_TRACE_EVENT_FIELD(UInt64[], Frames)
-//UE_TRACE_EVENT_END()
+// Set object name for Asset
+UE_TRACE_EVENT_BEGIN(Memory, MarkObject)
+    UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Name)
+UE_TRACE_EVENT_END()
 
-#if 0
 UE_TRACE_EVENT_BEGIN(Memory, HeapSpec, NoSync | Important)
-    UE_TRACE_EVENT_FIELD(HeapId, Id)
-    UE_TRACE_EVENT_FIELD(HeapId, ParentId)
+    UE_TRACE_EVENT_FIELD(UInt32, Id)
+    UE_TRACE_EVENT_FIELD(UInt32, ParentId)
     UE_TRACE_EVENT_FIELD(UInt16, Flags)
-    UE_TRACE_EVENT_FIELD(UE::Trace::WideString, Name)
+    UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Name)
 UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Memory, HeapMarkAlloc)
     UE_TRACE_EVENT_FIELD(UInt64, Address)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
     UE_TRACE_EVENT_FIELD(UInt16, Flags)
-    UE_TRACE_EVENT_FIELD(HeapId, Heap)
-UE_TRACE_EVENT_END()
+    UE_TRACE_EVENT_FIELD(UInt32, Heap)
+    UE_TRACE_EVENT_END()
 
 UE_TRACE_EVENT_BEGIN(Memory, HeapUnmarkAlloc)
     UE_TRACE_EVENT_FIELD(UInt64, Address)
-    UE_TRACE_EVENT_FIELD(HeapId, Heap)
+    UE_TRACE_EVENT_FIELD(UInt32, CallstackId)
+    UE_TRACE_EVENT_FIELD(UInt32, Heap)
 UE_TRACE_EVENT_END()
-#endif
 
 UE_TRACE_EVENT_BEGIN(Memory, TagSpec, Important | NoSync)
     UE_TRACE_EVENT_FIELD(SInt32, Tag)
@@ -459,8 +523,40 @@ UE_TRACE_EVENT_BEGIN(Memory, MemoryScopePtr, NoSync)
     UE_TRACE_EVENT_FIELD(UInt64, Ptr)
 UE_TRACE_EVENT_END()
 
-// If layout of the above events are changed, bump this version number
-constexpr UInt8 MemoryTraceVersion = 1;
+UE_TRACE_CHANNEL_DEFINE(VulkanChannel, "Vulkan Event Markers", true)
+
+UE_TRACE_EVENT_BEGIN(Vulkan, SetRenderPassName)
+    UE_TRACE_EVENT_FIELD(UInt64, RenderPass)
+    UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Name)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Vulkan, SetFrameBufferName)
+    UE_TRACE_EVENT_FIELD(UInt64, FrameBuffer)
+    UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Name)
+UE_TRACE_EVENT_END()
+
+UE_TRACE_EVENT_BEGIN(Vulkan, SetCommandBufferName)
+    UE_TRACE_EVENT_FIELD(UInt64, CommandBuffer)
+    UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Name)
+UE_TRACE_EVENT_END()
+
+using namespace utrace;
+
+// If the layout of the above events is changed, bump this version number.
+// version 1: Initial version (UE 5.0, UE 5.1)
+// version 2: Added CallstackId for Free events and also for HeapMarkAlloc, HeapUnmarkAlloc events (UE 5.2).
+constexpr UInt8 MemoryTraceVersion = 2;
+
+static std::atomic_bool GIsInitialized{false};
+static std::atomic_bool GIsModuleInitialized{false};
+
+bool GCaptureCallStack = true;
+bool GUseFastCallStackTrace = true;
+
+#ifdef _WIN32
+#else
+static pthread_key_t GNeedHookMalloc = NULL;
+#endif
 
 extern dynamic_array<core::string> g_commandArgs;
 
@@ -854,82 +950,6 @@ void FGpuProfilerTrace::Deinitialize()
 {
 }
 
-UInt16 FCountersTrace::OutputInitCounter(const char* CounterName, ETraceCounterType CounterType, ETraceCounterDisplayHint CounterDisplayHint)
-{
-    if (!UE_TRACE_CHANNELEXPR_IS_ENABLED(CountersChannel))
-    {
-        return 0;
-    }
-
-    static std::atomic<UInt16> NextId;
-
-    UInt16 CounterId = UInt16(NextId++) + 1;
-    UInt16 NameLen = UInt16(strlen(CounterName));
-    UE_TRACE_LOG(Counters, Spec, CountersChannel, NameLen * sizeof(char))
-        << Spec.Id(CounterId)
-        << Spec.Type(UInt8(CounterType))
-        << Spec.DisplayHint(UInt8(CounterDisplayHint))
-        << Spec.Name(CounterName, NameLen);
-    return CounterId;
-}
-
-void FCountersTrace::OutputSetValue(uint16_t CounterId, int64_t Value)
-{
-    if (!CounterId)
-    {
-        return;
-    }
-
-    UE_TRACE_LOG(Counters, SetValueInt, CountersChannel)
-        << SetValueInt.Cycle(UE::Trace::Private::TimeGetTimestamp())
-        << SetValueInt.Value(Value)
-        << SetValueInt.CounterId(CounterId);
-}
-
-void FCountersTrace::OutputSetValue(uint16_t CounterId, double Value)
-{
-    if (!CounterId)
-    {
-        return;
-    }
-
-    UE_TRACE_LOG(Counters, SetValueFloat, CountersChannel)
-        << SetValueFloat.Cycle(UE::Trace::Private::TimeGetTimestamp())
-        << SetValueFloat.Value(Value)
-        << SetValueFloat.CounterId(CounterId);
-}
-
-void FLogTrace::OutputLogCategory(const void* LogPoint, const char* Name, ELogVerbosity::Type DefaultVerbosity)
-{
-    UInt16 NameLen = UInt16(strlen(Name));
-    UE_TRACE_LOG(Logging, LogCategory, LogChannel, NameLen * sizeof(char))
-        << LogCategory.CategoryPointer(LogPoint)
-        << LogCategory.DefaultVerbosity(DefaultVerbosity)
-        << LogCategory.Name(Name, NameLen);
-}
-
-void FLogTrace::OutputLogMessageSpec(const void* LogPoint, const void* Category, ELogVerbosity::Type Verbosity, const char* File, int32_t Line, const char* Format)
-{
-    UInt16 FileNameLen = UInt16(strlen(File));
-    UInt16 FormatStringLen = UInt16(strlen(Format));
-    UInt32 DataSize = (FileNameLen * sizeof(char)) + (FormatStringLen * sizeof(char));
-    UE_TRACE_LOG(Logging, LogMessageSpec, LogChannel, DataSize)
-        << LogMessageSpec.LogPoint(LogPoint)
-        << LogMessageSpec.CategoryPointer(Category)
-        << LogMessageSpec.Line(Line)
-        << LogMessageSpec.Verbosity(Verbosity)
-        << LogMessageSpec.FileName(File, FileNameLen)
-        << LogMessageSpec.FormatString(Format, FormatStringLen);
-}
-
-void FLogTrace::OutputLogMessageInternal(const void* LogPoint, uint16_t EncodedFormatArgsSize, uint8_t* EncodedFormatArgs)
-{
-    UE_TRACE_LOG(Logging, LogMessage, LogChannel)
-        << LogMessage.LogPoint(LogPoint)
-        << LogMessage.Cycle(UE::Trace::Private::TimeGetTimestamp())
-        << LogMessage.FormatArgs(EncodedFormatArgs, EncodedFormatArgsSize);
-}
-
 namespace
 {
 #if PLATFORMFILETRACE_DEBUG_ENABLED
@@ -1128,6 +1148,12 @@ namespace Trace
 } // namespace Trace
 } // namespace UE
 
+typedef UInt32 HeapId;
+
+HeapId engineHeapId = 0;
+HeapId libcHeapId = 0;
+HeapId programHeapId = 0;
+
 void utrace_mem_update_internal();
 
 void utrace_mem_init()
@@ -1138,6 +1164,9 @@ void utrace_mem_init()
         return;
     }
 
+    if (GTraceAllowed)
+        return;
+
     atexit([]() { GDoPumpTrace = true; });
 
     GTraceAllowed = true;
@@ -1147,63 +1176,168 @@ void utrace_mem_init()
         << Init.Version(MemoryTraceVersion)
         << Init.MinAlignment(UInt8(MIN_ALIGNMENT))
         << Init.SizeShift(UInt8(SizeShift));
-    //const HeapId SystemRootHeap = MemoryTrace_RootHeapSpec(TEXT("System memory"));
-    //check(SystemRootHeap == EMemoryTraceRootHeap::SystemMemory);
-    //const HeapId VideoRootHeap = MemoryTrace_RootHeapSpec(TEXT("Video memory"));
-    //check(VideoRootHeap == EMemoryTraceRootHeap::VideoMemory);
+    // Engine Allocated
+    const HeapId SystemRootHeap = utrace_mem_root_heap_spec(MAKE_UTRACE_STR("System memory"), (UInt32)EMemoryTraceHeapFlags::None);
+    check(SystemRootHeap == EMemoryTraceRootHeap::SystemMemory);
+    // GPU Driver allocated
+    const HeapId VideoRootHeap = utrace_mem_root_heap_spec(MAKE_UTRACE_STR("Video memory"), (UInt32)EMemoryTraceHeapFlags::None);
+    check(VideoRootHeap == EMemoryTraceRootHeap::VideoMemory);
+    engineHeapId = utrace_mem_root_heap_spec(MAKE_UTRACE_STR("Engine memory"), (UInt32)EMemoryTraceHeapFlags::None);
+    libcHeapId = utrace_mem_root_heap_spec(MAKE_UTRACE_STR("libc memory"), (UInt32)EMemoryTraceHeapFlags::None);
+    programHeapId = utrace_mem_root_heap_spec(MAKE_UTRACE_STR("Program"), (UInt32)EMemoryTraceHeapFlags::None);
     static_assert((1 << SizeShift) - 1 <= MIN_ALIGNMENT, "Not enough bits to pack size fields");
 #endif
 }
 
-void utrace_mem_alloc(UInt64 Address, UInt64 Size, UInt32 Alignment)
+FORCEINLINE UInt32 GetCallstackId()
 {
-#if UE_TRACE_ENABLED
-    if (!GTraceAllowed)
+    if (!GCaptureCallStack)
+        return 0;
+    using namespace UE::Trace;
+    static thread_local void *buffer[CALLSTACK_BUFFERSIZE];
+    UInt32 hash = 0;
+    auto numStacks = (UInt32)UE::Trace::Private::GetCallbackFrames(buffer, CALLSTACK_BUFFERSIZE, 0, hash,
+                                                           GUseFastCallStackTrace);
+    void *AddressOfReturnAddress = PLATFORM_RETURN_ADDRESS_POINTER();
+    if (FBacktracer *Instance = FBacktracer::Get()) {
+        return Instance->GetBacktraceId(hash, numStacks, buffer);
+    }
+    return 0;
+}
+
+void utrace_mem_alloc_with_callstack(UInt64 Address, UInt64 Size, UInt32 Alignment, utrace_u32 rootHeap, utrace_u32 callstackId)
+{
+    if (!GTraceAllowed || Address == 0 || Size == 0)
     {
         return;
     }
     const UInt32 AlignmentPow2 = UInt32(CountTrailingZeros(Alignment));
     const UInt32 Alignment_SizeLower = (AlignmentPow2 << SizeShift) | UInt32(Size & ((1 << SizeShift) - 1));
-    const UInt32 CallstackId = 0; // GDoNotAllocateInTrace ? 0 : CallstackTrace_GetCurrentId();
-    UE_TRACE_LOG(Memory, AllocSystem, MemAllocChannel)
-        << AllocSystem.CallstackId(CallstackId)
-        << AllocSystem.Address(UInt64(Address))
-        << AllocSystem.Size(UInt32(Size >> SizeShift))
-        << AllocSystem.AlignmentPow2_SizeLower(UInt8(Alignment_SizeLower));
+    switch (rootHeap)
+    {
+        case EMemoryTraceRootHeap::SystemMemory:
+        {
+            UE_TRACE_LOG(Memory, AllocSystem, MemAllocChannel)
+                                        << AllocSystem.Address(UInt64(Address))
+                                        << AllocSystem.CallstackId(callstackId)
+                                        << AllocSystem.Size(UInt32(Size >> SizeShift))
+                                        << AllocSystem.AlignmentPow2_SizeLower(UInt8(Alignment_SizeLower));
+            break;
+        }
 
+        case EMemoryTraceRootHeap::VideoMemory:
+        {
+            UE_TRACE_LOG(Memory, AllocVideo, MemAllocChannel)
+                                        << AllocVideo.Address(UInt64(Address))
+                                        << AllocVideo.CallstackId(callstackId)
+                                        << AllocVideo.Size(UInt32(Size >> SizeShift))
+                                        << AllocVideo.AlignmentPow2_SizeLower(UInt8(Alignment_SizeLower));
+            break;
+        }
+
+        default:
+        {
+            UE_TRACE_LOG(Memory, Alloc, MemAllocChannel)
+                                        << Alloc.Address(UInt64(Address))
+                                        << Alloc.CallstackId(callstackId)
+                                        << Alloc.Size(UInt32(Size >> SizeShift))
+                                        << Alloc.AlignmentPow2_SizeLower(UInt8(Alignment_SizeLower))
+                                        << Alloc.RootHeap(UInt8(rootHeap));
+            break;
+        }
+    }
     utrace_mem_update_internal();
+}
+
+utrace_u32 utrace_mem_alloc(UInt64 Address, UInt64 Size, UInt32 Alignment, utrace_u32 rootHeap)
+{
+#if UE_TRACE_ENABLED
+    if (!GTraceAllowed || Address == 0 || Size == 0)
+    {
+        return 0;
+    }
+    const UInt32 CallstackId = GetCallstackId(); // TODO: GDoNotAllocateInTrace ? 0 : CallstackTrace_GetCurrentId();
+    utrace_mem_alloc_with_callstack(Address, Size, Alignment, rootHeap, CallstackId);
+    return CallstackId;
 #endif
 }
 
-void utrace_mem_free(UInt64 Address)
+utrace_u32 utrace_mem_free(UInt64 Address, utrace_u32 rootHeap)
+{
+#if UE_TRACE_ENABLED
+    if (!GTraceAllowed || Address == 0)
+    {
+        return 0;
+    }
+
+    const UInt32 CallstackId = GetCallstackId();
+
+    switch (rootHeap) 
+    {
+    case EMemoryTraceRootHeap::SystemMemory:
+    {
+        UE_TRACE_LOG(Memory, FreeSystem, MemAllocChannel)
+            << FreeSystem.Address(UInt64(Address))
+            << FreeSystem.CallstackId(CallstackId);
+        break;
+    }
+    case EMemoryTraceRootHeap::VideoMemory:
+    {
+        UE_TRACE_LOG(Memory, FreeVideo, MemAllocChannel)
+            << FreeVideo.Address(UInt64(Address))
+            << FreeVideo.CallstackId(CallstackId);
+        break;
+    }
+    default: 
+    {
+        UE_TRACE_LOG(Memory, Free, MemAllocChannel)
+            << Free.Address(UInt64(Address))
+            << Free.CallstackId(CallstackId)
+            << Free.RootHeap(UInt8(rootHeap));
+        break;
+    }
+    }
+    utrace_mem_update_internal();
+    return CallstackId;
+#endif
+}
+
+void utrace_mem_realloc_free(UInt64 Address, utrace_u32 rootHeap)
 {
 #if UE_TRACE_ENABLED
     if (!GTraceAllowed)
     {
         return;
     }
-    UE_TRACE_LOG(Memory, FreeSystem, MemAllocChannel)
-        << FreeSystem.Address(UInt64(Address));
 
-    utrace_mem_update_internal();
-#endif
-}
+    const UInt32 CallstackId = GetCallstackId();
+        //GDoNotAllocateInTrace ? 0 : CallstackTrace_GetCurrentId();
 
-void utrace_mem_realloc_free(UInt64 Address)
-{
-#if UE_TRACE_ENABLED
-    if (!GTraceAllowed)
+    switch (rootHeap) 
     {
-        return;
+    case EMemoryTraceRootHeap::SystemMemory: 
+    {
+        UE_TRACE_LOG(Memory, ReallocFreeSystem, MemAllocChannel)
+            << ReallocFreeSystem.Address(UInt64(Address))
+            << ReallocFreeSystem.CallstackId(CallstackId);
+        break;
     }
-    UE_TRACE_LOG(Memory, ReallocFreeSystem, MemAllocChannel)
-        << ReallocFreeSystem.Address(UInt64(Address));
+
+    default: 
+    {
+        UE_TRACE_LOG(Memory, ReallocFree, MemAllocChannel)
+            << ReallocFree.Address(UInt64(Address))
+            << ReallocFree.CallstackId(CallstackId)
+            << ReallocFree.RootHeap(UInt8(rootHeap));
+        break;
+    }
+    }
 
     utrace_mem_update_internal();
 #endif
 }
 
-void utrace_mem_realloc_alloc(UInt64 Address, UInt64 NewSize, UInt32 Alignment)
+void utrace_mem_realloc_alloc(UInt64 Address, UInt64 NewSize, UInt32 Alignment, utrace_u32 rootHeap)
 {
 #if UE_TRACE_ENABLED
     if (!GTraceAllowed)
@@ -1212,12 +1346,29 @@ void utrace_mem_realloc_alloc(UInt64 Address, UInt64 NewSize, UInt32 Alignment)
     }
     const UInt32 AlignmentPow2 = UInt32(CountTrailingZeros(Alignment));
     const UInt32 Alignment_SizeLower = (AlignmentPow2 << SizeShift) | UInt32(NewSize & ((1 << SizeShift) - 1));
-    const UInt32 CallstackId = 0; //GDoNotAllocateInTrace ? 0 : CallstackTrace_GetCurrentId();
-    UE_TRACE_LOG(Memory, ReallocAllocSystem, MemAllocChannel)
-        << ReallocAllocSystem.CallstackId(CallstackId)
-        << ReallocAllocSystem.Address(UInt64(Address))
-        << ReallocAllocSystem.Size(UInt32(NewSize >> SizeShift))
-        << ReallocAllocSystem.AlignmentPow2_SizeLower(UInt8(Alignment_SizeLower));
+    const UInt32 CallstackId = GetCallstackId(); //GDoNotAllocateInTrace ? 0 : CallstackTrace_GetCurrentId();
+    switch (rootHeap) 
+    {
+    case EMemoryTraceRootHeap::SystemMemory: 
+    {
+        UE_TRACE_LOG(Memory, ReallocAllocSystem, MemAllocChannel)
+            << ReallocAllocSystem.Address(UInt64(Address))
+            << ReallocAllocSystem.CallstackId(CallstackId)
+            << ReallocAllocSystem.Size(UInt32(NewSize >> SizeShift))
+            << ReallocAllocSystem.AlignmentPow2_SizeLower(UInt8(Alignment_SizeLower));
+        break;
+    }
+    default:
+    {
+        UE_TRACE_LOG(Memory, ReallocAlloc, MemAllocChannel)
+            << ReallocAlloc.Address(UInt64(Address))
+            << ReallocAlloc.CallstackId(CallstackId)
+            << ReallocAlloc.Size(UInt32(NewSize >> SizeShift))
+            << ReallocAlloc.AlignmentPow2_SizeLower(UInt8(Alignment_SizeLower))
+            << ReallocAlloc.RootHeap(UInt8(rootHeap));
+        break;
+    }
+    }
 
     utrace_mem_update_internal();
 #endif
@@ -1243,23 +1394,17 @@ void utrace_mem_update_internal()
 constexpr SInt32 TRACE_TAG = 257;
 static thread_local SInt32 GActiveTag = 0;
 
-#if UE_TRACE_ENABLED
 class FTagTrace
 {
 public:
-#if 0
-    FTagTrace(FMalloc* InMalloc);
-#endif
+    FTagTrace();
+
     void			AnnounceGenericTags() const;
     void 			AnnounceTagDeclarations();
-    void AnnounceSpecialTags() const;
-#if ENABLE_LOW_LEVEL_MEM_TRACKER
-    static void 	OnAnnounceTagDeclaration(FLLMTagDeclaration& TagDeclaration);
-#endif
-    SInt32			AnnounceCustomTag(SInt32 Tag, SInt32 ParentTag, const char* Display) const;
-#if 0
-    SInt32 			AnnounceFNameTag(const FName& TagName);
-#endif
+    void            AnnounceSpecialTags() const;
+    SInt32			AnnounceCustomTag(SInt32 Tag, SInt32 ParentTag, const utrace_string& Display) const;
+    SInt32 			AnnounceFNameTag(const utrace_string& TagName);
+
 private:
 
     static constexpr SInt32 FNAME_INDEX_OFFSET = 512;
@@ -1278,28 +1423,20 @@ private:
             memset(Entries, 0, EntryCount * sizeof(FTagNameSetEntry));
         }
     };
-#if 0
-    typedef TGrowOnlyLockFreeHash<FTagNameSetEntry, SInt32, bool> FTagNameSet;
+    typedef TGrowOnlyLockFreeHash<FTagNameSetEntry, UInt32, bool> FTagNameSet;
 
     FTagNameSet				AnnouncedNames;
-    static FMalloc* Malloc;
-#endif
 };
 
-#if 0
-FMalloc* FTagTrace::Malloc = nullptr;
 static FTagTrace* GTagTrace = nullptr;
 ////////////////////////////////////////////////////////////////////////////////
-FTagTrace::FTagTrace(FMalloc* InMalloc)
-    : AnnouncedNames(InMalloc)
+FTagTrace::FTagTrace()
 {
-    Malloc = InMalloc;
     AnnouncedNames.Reserve(1024);
     AnnounceGenericTags();
     AnnounceTagDeclarations();
     AnnounceSpecialTags();
 }
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 void FTagTrace::AnnounceGenericTags() const
@@ -1348,20 +1485,21 @@ void FTagTrace::AnnounceSpecialTags() const
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-#if ENABLE_LOW_LEVEL_MEM_TRACKER
-void FTagTrace::OnAnnounceTagDeclaration(FLLMTagDeclaration& TagDeclaration)
+SInt32 FTagTrace::AnnounceFNameTag(const utrace_string& Name)
 {
-    TagDeclaration.ConstructUniqueName();
-    GTagTrace->AnnounceFNameTag(TagDeclaration.GetUniqueName());
-}
-#endif
+#if 1
+    auto hash = [](const char *str) -> UInt32
+    {
+        UInt32 hash = 5381;
+        int c;
 
-#if 0
-////////////////////////////////////////////////////////////////////////////////
-SInt32 FTagTrace::AnnounceFNameTag(const FName& Name)
-{
-    const SInt32 NameIndex = Name.GetDisplayIndex().ToUnstableInt() + FNAME_INDEX_OFFSET;
+        while (c = (utrace_u8)(*str++))
+            hash = ((hash << 5) + hash) + c; /* hash * 33 + c */
 
+        return hash;
+    };
+
+    const auto NameIndex = hash(Name.str);
     // Find or add the item
     bool bAlreadyInTable;
     AnnouncedNames.FindOrAdd(NameIndex, true, &bAlreadyInTable);
@@ -1369,31 +1507,30 @@ SInt32 FTagTrace::AnnounceFNameTag(const FName& Name)
     {
         return NameIndex;
     }
-
     // First time encountering this name, announce it
-    ANSICHAR NameString[NAME_SIZE];
-    Name.GetPlainANSIString(NameString);
-
+    //ANSICHAR NameString[NAME_SIZE];
+    //Name.GetPlainANSIString(NameString);
     SInt32 ParentTag = -1;
-    FAnsiStringView NameView(NameString);
-    SInt32 LeafStart;
-    if (NameView.FindLastChar('/', LeafStart))
+    std::string_view NameView(Name.str, Name.len);
+    auto LeafStart = NameView.find_first_of('/');
+    if (LeafStart != std::string::npos)
     {
-        FName ParentName(NameView.Left(LeafStart));
-        ParentTag = AnnounceFNameTag(ParentName);
+        std::string_view ParentName(NameView.substr(LeafStart));
+        ParentTag = AnnounceFNameTag({ ParentName.data(), (utrace_u32)ParentName.size() });
     }
-
-    return AnnounceCustomTag(NameIndex, ParentTag, NameString);
-}
+    return AnnounceCustomTag(NameIndex, ParentTag, Name);
+#else
+    return 0;
 #endif
+}
+
 ////////////////////////////////////////////////////////////////////////////////
-SInt32 FTagTrace::AnnounceCustomTag(SInt32 Tag, SInt32 ParentTag, const char* Display) const
+SInt32 FTagTrace::AnnounceCustomTag(SInt32 Tag, SInt32 ParentTag, const utrace_string& Display) const
 {
-    const UInt32 DisplayLen = 0;// FCStringAnsi::Strlen(Display);
-    UE_TRACE_LOG(Memory, TagSpec, MemAllocChannel, DisplayLen)
+    UE_TRACE_LOG(Memory, TagSpec, MemAllocChannel, Display.len)
         << TagSpec.Tag(Tag)
         << TagSpec.Parent(ParentTag)
-        << TagSpec.Display(Display, DisplayLen);
+        << TagSpec.Display(Display.str, Display.len);
     return Tag;
 }
 
@@ -1406,36 +1543,14 @@ FMemScope::FMemScope(SInt32 InTag, bool bShouldActivate /*= true*/)
     }
 }
 
-#if 0
 ////////////////////////////////////////////////////////////////////////////////
-FMemScope::FMemScope(ELLMTag InTag, bool bShouldActivate /*= true*/)
+FMemScope::FMemScope(const utrace_string& InName, bool bShouldActivate /*= true*/)
 {
     if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel) & bShouldActivate)
     {
-        ActivateScope(static_cast<SInt32>(InTag));
+        ActivateScope(utrace_mem_name_tag(InName));
     }
 }
-
-////////////////////////////////////////////////////////////////////////////////
-FMemScope::FMemScope(const FName& InName, bool bShouldActivate /*= true*/)
-{
-    if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel) & bShouldActivate)
-    {
-        ActivateScope(MemoryTrace_AnnounceFNameTag(InName));
-    }
-}
-
-////////////////////////////////////////////////////////////////////////////////
-FMemScope::FMemScope(const UE::LLMPrivate::FTagData* TagData, bool bShouldActivate /*= true*/)
-{
-#if ENABLE_LOW_LEVEL_MEM_TRACKER
-    if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel) & bShouldActivate && TagData)
-    {
-        ActivateScope(MemoryTrace_AnnounceFNameTag(TagData->GetName()));
-    }
-#endif // ENABLE_LOW_LEVEL_MEM_TRACKER
-}
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 void FMemScope::ActivateScope(SInt32 InTag)
@@ -1481,24 +1596,35 @@ FMemScopePtr::~FMemScopePtr()
 {
 }
 
-#endif // End UE_TRACE_ENABLED
-
-SInt32 utrace_mem_announce_tag(SInt32 Tag, SInt32 ParentTag, const char* Display)
+SInt32 utrace_mem_announce_custom_tag(SInt32 Tag, SInt32 ParentTag, utrace_string Display)
 {
 #if UE_TRACE_ENABLED
-    return GActiveTag;
-#else
-    return -1;
+    // todo: How do we check if tag trace is active?
+    if (GTagTrace) {
+        return GTagTrace->AnnounceCustomTag(Tag, ParentTag, Display);
+    }
 #endif
+    return -1;
 }
 
-SInt32 utrace_mem_name_tag(const char* TagName)
+void utrace_mem_init_tags()
+{
+    if (!GTagTrace)
+    {
+        GTagTrace = (FTagTrace*)malloc(sizeof(FTagTrace) /*, alignof(FTagTrace)*/);
+        new (GTagTrace) FTagTrace;
+    }
+}
+
+SInt32 utrace_mem_name_tag(utrace_string TagName)
 {
 #if UE_TRACE_ENABLED
-    return GActiveTag;
-#else
-    return -1;
+    if (GTagTrace) 
+    {
+        return GTagTrace->AnnounceFNameTag(TagName);
+    }
 #endif
+    return -1;
 }
 
 SInt32 utrace_mem_get_active_tag()
@@ -1510,16 +1636,150 @@ SInt32 utrace_mem_get_active_tag()
 #endif
 }
 
-void utrace_screenshot(int frameNo)
+void utrace_mem_mark_object_name(void* address, utrace_string objName)
 {
-#if UE_TRACE_ENABLED
-    if (GScreenshotInterval > 0 && (frameNo % GScreenshotInterval == 0))
-    {
-#if 0
-        FMiscTrace::Screenshot(frameNo, GetGfxDevice());
-#endif
+    if (!GTraceAllowed) {
+        return;
     }
-#endif
+    
+    UE_TRACE_LOG(Memory, MarkObject, MemAllocChannel)
+        << MarkObject.Address(UInt64(address))
+        << MarkObject.Name(objName.str, objName.len);
+}
+
+utrace_u32 utrace_mem_heap_spec(utrace_u32 parentId, utrace_string name, utrace_u32 flags)
+{
+    if (!GTraceAllowed) {
+        return 0;
+    }
+
+    static std::atomic<UInt32> HeapIdCount(EMemoryTraceRootHeap::EndReserved + 1); // Reserve indexes for root heaps
+    const UInt32 Id = HeapIdCount.fetch_add(1);
+    const UInt32 NameLen = name.len;
+    const UInt32 DataSize = NameLen;
+    check(parentId < Id);
+
+    UE_TRACE_LOG(Memory, HeapSpec, MemAllocChannel, DataSize)
+        << HeapSpec.Id(Id)
+        << HeapSpec.ParentId(parentId)
+        << HeapSpec.Name(name.str, NameLen)
+        << HeapSpec.Flags(UInt16(flags));
+
+    return Id;
+}
+
+utrace_u32 utrace_mem_root_heap_spec(utrace_string name, utrace_u32 flags)
+{
+    if (!GTraceAllowed) {
+        return 0;
+    }
+
+    static std::atomic<UInt32> RootHeapCount(0);
+    const UInt32 Id = RootHeapCount.fetch_add(1);
+    check(Id <= EMemoryTraceRootHeap::EndReserved);
+
+    const UInt32 DataSize = name.len;
+
+    UE_TRACE_LOG(Memory, HeapSpec, MemAllocChannel, DataSize)
+        << HeapSpec.Id(Id)
+        << HeapSpec.ParentId(UInt32(~0))
+        << HeapSpec.Name(name.str, name.len)
+        << HeapSpec.Flags(UInt16(UInt32(EMemoryTraceHeapFlags::Root) | flags));
+
+    return Id;
+}
+
+
+FORCEINLINE void utrace_mem_mark_alloc_as_heap_with_callstack(utrace_u64 addr, utrace_u32 heap, utrace_u32 flags, UInt32 callstackId)
+{
+    if (!GTraceAllowed) {
+        return;
+    }
+    UE_TRACE_LOG(Memory, HeapMarkAlloc, MemAllocChannel)
+                                << HeapMarkAlloc.Address(UInt64(addr))
+                                << HeapMarkAlloc.CallstackId(callstackId)
+                                << HeapMarkAlloc.Flags(UInt16(UInt16(EMemoryTraceHeapAllocationFlags::Heap) | flags))
+                                << HeapMarkAlloc.Heap(heap);
+}
+
+void utrace_mem_mark_alloc_as_heap(utrace_u64 addr, utrace_u32 heap, utrace_u32 flags)
+{
+    if (!GTraceAllowed) {
+        return;
+    }
+    const UInt32 callstackId = GetCallstackId();
+    utrace_mem_mark_alloc_as_heap_with_callstack(addr, heap, flags, callstackId);
+}
+
+void utrace_mem_unmark_alloc_as_heap_with_callstack(utrace_u64 addr, utrace_u32 heap, utrace_u32 callStackId)
+{
+    if (!GTraceAllowed) {
+        return;
+    }
+    // Sets all flags to zero
+    UE_TRACE_LOG(Memory, HeapUnmarkAlloc, MemAllocChannel)
+                                << HeapUnmarkAlloc.Address(UInt64(addr))
+                                << HeapUnmarkAlloc.CallstackId(callStackId)
+                                << HeapUnmarkAlloc.Heap(heap);
+}
+
+void utrace_mem_unmark_alloc_as_heap(utrace_u64 addr, utrace_u32 heap)
+{
+    if (!GTraceAllowed) {
+        return;
+    }
+
+    const UInt32 callstackId = GetCallstackId();
+    utrace_mem_unmark_alloc_as_heap_with_callstack(addr, heap, callstackId);
+}
+
+void utrace_mem_scope_ctor(void* ptr, utrace_string name, utrace_u8 active)
+{
+    new (ptr) FMemScope(name, active);
+}
+
+void utrace_mem_scope_dtor(void* ptr)
+{
+    FMemScope* scope = (FMemScope*)ptr;
+    scope->~FMemScope();
+}
+
+void utrace_mem_scope_ptr_ctor(void* ptr, void* addr)
+{
+    new (ptr) FMemScopePtr((UInt64)addr);
+}
+
+void utrace_mem_scope_ptr_dtor(void* ptr)
+{
+    FMemScopePtr* p = (FMemScopePtr*)ptr;
+    p->~FMemScopePtr();
+}
+
+void utrace_vulkan_set_render_pass_name(utrace_u64 render_pass, utrace_string name)
+{
+    if (!UE_TRACE_CHANNELEXPR_IS_ENABLED(VulkanChannel))
+        return;
+    UE_TRACE_LOG(Vulkan, SetRenderPassName, VulkanChannel)
+        << SetRenderPassName.RenderPass(render_pass)
+        << SetRenderPassName.Name(name.str, name.len);
+}
+
+void utrace_vulkan_set_frame_buffer_name(utrace_u64 frame_buffer, utrace_string name)
+{
+    if (!UE_TRACE_CHANNELEXPR_IS_ENABLED(VulkanChannel))
+        return;
+    UE_TRACE_LOG(Vulkan, SetFrameBufferName, VulkanChannel)
+        << SetFrameBufferName.FrameBuffer(frame_buffer)
+        << SetFrameBufferName.Name(name.str, name.len);
+}
+
+void utrace_vulkan_set_command_buffer_name(utrace_u64 command_buffer, utrace_string name)
+{
+    if (!UE_TRACE_CHANNELEXPR_IS_ENABLED(VulkanChannel))
+        return;
+    UE_TRACE_LOG(Vulkan, SetCommandBufferName, VulkanChannel)
+        << SetCommandBufferName.CommandBuffer(command_buffer)
+        << SetCommandBufferName.Name(name.str, name.len);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1549,7 +1809,12 @@ public:
     void					StartWorkerThread();
     void					StartEndFramePump();
     void                    StartGpuTrace();
+    void                    InjectSysMemAlloc();
 
+#if PLATFORM_ANDROID
+    static void             OnDlNotify(int flag, const char* so_name, const char* realpath, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum, void*);
+    static int              OnDlIterate(struct dl_phdr_info* info, size_t size, void* data);
+#endif
 private:
     enum class EState : UInt8
     {
@@ -1586,7 +1851,8 @@ private:
 
 static FTraceAuxiliaryImpl GTraceAuxiliary;
 
-const char* GDefaultChannels = "cpu,gpu,frame,log,file,bookmark"; // TODO: memalloc,
+const char* GDefaultChannels = "cpu,gpu,frame,log,file,counters,bookmark"; // TODO: memalloc,
+const char* GMemoryChannels = "module,callstack,memalloc"; // memory channels
 
 ////////////////////////////////////////////////////////////////////////////////
 void FTraceAuxiliaryImpl::AddCommandlineChannels(const char* ChannelList)
@@ -1655,15 +1921,15 @@ void FTraceAuxiliaryImpl::ForEachChannel(const char* ChannelList, bool bResolveP
             {
                 core::string Value;
                 // Check against hard coded presets
-                if (Token.compare("default"/*, kComparisonIgnoreCase*/) == 0)
+                if (Token.equals("default", false))
                 {
                     ForEachChannel(GDefaultChannels, false, Callable);
                     return;
                 }
-                //else if (Token.compare("memory", kComparisonIgnoreCase) == 0)
-                //{
-                //    ForEachChannel(GMemoryChannels, false, Callable);
-                //}
+                else if (Token.equals("memory", false))
+                {
+                    ForEachChannel(GMemoryChannels, false, Callable);
+                }
             }
             auto name = (core::string)Token;
             (this->*Callable)(name.c_str());
@@ -2031,6 +2297,8 @@ bool FTraceAuxiliary::Start(EConnectionType type, const char* target, const char
         {
             GTraceAuxiliary.StartGpuTrace();
         }
+
+        GTraceAuxiliary.InjectSysMemAlloc();
 #endif
     }
 
@@ -2267,6 +2535,96 @@ void FTraceAuxiliaryImpl::StartGpuTrace()
 #endif
 }
 
+void FTraceAuxiliaryImpl::InjectSysMemAlloc()
+{
+#if PLATFORM_ANDROID
+#if UE_TRACE_ENABLED
+    //if (UE_TRACE_CHANNELEXPR_IS_ENABLED(MemAllocChannel))
+    {
+        if (HasARGV("memhook"))
+        {
+            utrace_module_init(MAKE_UTRACE_STR("so"), 0);
+
+            auto libdl = dlopen("libdl.so", RTLD_GLOBAL);
+            Fn_dl_register_notification dl_register_notification = (Fn_dl_register_notification)dlsym(libdl, "dl_register_notification");
+            if (dl_register_notification)
+            {
+                dl_register_notification(&FTraceAuxiliaryImpl::OnDlNotify, this);
+            }
+            dl_iterate_phdr(&FTraceAuxiliaryImpl::OnDlIterate, this);
+
+            //xhook_refresh(0);
+        }
+    }
+#endif
+#endif
+}
+
+#if PLATFORM_ANDROID
+#if UE_TRACE_ENABLED
+void FTraceAuxiliaryImpl::OnDlNotify(int flag, const char* so_name, const char* realpath, ElfW(Addr) base, const ElfW(Phdr)* phdr, ElfW(Half) phnum, void* data)
+{
+    for (int h = 0; h < phnum; h++)
+        if ((phdr[h].p_type == PT_LOAD) &&
+            (phdr[h].p_memsz > 0) &&
+            (phdr[h].p_flags)) {
+            const uintptr_t  first = base + phdr[h].p_vaddr;
+            const uintptr_t  last  = first + phdr[h].p_memsz - 1;
+            if (flag == 1)
+            {
+                FMemScope scope(MAKE_UTRACE_STR("Program"));
+                utrace_module_load({ so_name, (utrace_u32)strlen(so_name) }, (utrace_u64)first, (utrace_u32)phdr[h].p_memsz, (UInt8*)realpath, (utrace_u32)strlen(realpath));
+                /*auto callstack = */utrace_mem_alloc((utrace_u64)first, (utrace_u32)phdr[h].p_memsz, 0, programHeapId);
+                //utrace_mem_mark_alloc_as_heap_with_callstack((utrace_u64)first, programHeapId, 0, callstack);
+                //utrace_mem_alloc_with_callstack((utrace_u64)first, (utrace_u32)phdr[h].p_memsz, 0, 0, callstack);
+            }
+            else
+            {
+                utrace_module_unload((utrace_u64)first);
+                utrace_mem_free((utrace_u64)first, 0);
+            }
+        }
+}
+
+struct NewSoInfo : public dl_phdr_info
+{
+    const char* realpath;
+};
+
+int FTraceAuxiliaryImpl::OnDlIterate(struct dl_phdr_info* info, size_t size, void* data)
+{
+    const char  *name;
+    size_t      headers, h;
+    const char  *realpath = nullptr;
+    if (size == sizeof(NewSoInfo))
+    {
+        NewSoInfo* ninfo = (NewSoInfo*)info;
+        realpath = ninfo->realpath;
+    }
+    /* Empty name refers to the binary itself. */
+    if (!info->dlpi_name || !info->dlpi_name[0])
+        name = (const char *)data;
+    else
+        name = info->dlpi_name;
+
+    headers = info->dlpi_phnum;
+    for (h = 0; h < headers; h++)
+        if ((info->dlpi_phdr[h].p_type == PT_LOAD) &&
+            (info->dlpi_phdr[h].p_memsz > 0) &&
+            (info->dlpi_phdr[h].p_flags)) {
+            FMemScope scope(MAKE_UTRACE_STR("Program"));
+            const uintptr_t  first = info->dlpi_addr + info->dlpi_phdr[h].p_vaddr;
+            utrace_module_load({ name, (utrace_u32)strlen(name) }, (utrace_u64)first, (utrace_u32)info->dlpi_phdr[h].p_memsz , (UInt8*)(realpath? realpath: NULL), realpath? (unsigned int)strlen(realpath): 0);
+            /*auto callstack = */utrace_mem_alloc((utrace_u64)first, (utrace_u32)info->dlpi_phdr[h].p_memsz, 0, programHeapId);
+            //utrace_mem_mark_alloc_as_heap_with_callstack((utrace_u64)first, programHeapId, 0, callstack);
+            //utrace_mem_alloc_with_callstack((utrace_u64)first, (utrace_u32)info->dlpi_phdr[h].p_memsz, 0, 0, callstack);
+        }
+
+    return 0;
+}
+#endif
+#endif
+
 /////////////////////////// C API Interface ///////////////////////////////
 void utrace_initialize_main_thread(
 		utrace_string appName,
@@ -2278,6 +2636,9 @@ void utrace_initialize_main_thread(
 		utrace_build_configuration build_configuration,
         unsigned int tailBytes
 ) {
+    if (GIsInitialized.load())
+        return;
+
     core::ParseCommandline(commandLine.str, commandLine.len);
 
     core::string socName;
@@ -2368,6 +2729,7 @@ void utrace_initialize_main_thread(
 
     UE::Trace::ThreadRegister("GameThread", Thread::mainThreadId, -1);
     StartFromCommandlineArguments();
+    GIsInitialized.store(true);
 }
 
 void utrace_try_connect()
@@ -2384,16 +2746,16 @@ int utrace_screenshot_enabled()
     return FMiscTrace::ShouldTraceScreenshot() ? 1: 0;
 }
 
-void utrace_register_thread(const char* name, unsigned int sysId, int sortHint)
+void utrace_register_thread(const char* name, utrace_u32 sysId, int sortHint)
 {
     UE::Trace::ThreadRegister(name, sysId, sortHint);
 }
 
-void utrace_write_screenshot(
-		utrace_string shotName,
-		unsigned long long timestamp, 
-		unsigned int width, unsigned int height, 
-		unsigned char* imagePNGData, unsigned int imagePNGSize
+void utrace_screenshot_write(
+    utrace_string shotName,
+    utrace_u64 timestamp, 
+    utrace_u32 width, utrace_u32 height, 
+    unsigned char* imagePNGData, utrace_u32 imagePNGSize
 ) {
     FMiscTrace::OutputScreenshot(
         core::string_ref(shotName.str, shotName.len), 
@@ -2419,6 +2781,64 @@ void utrace_cpu_begin_name2(const char* name, int name_len, const char* file_nam
 void utrace_cpu_end()
 {
     FCpuProfilerTrace::OutputEndEvent();
+}
+
+void utrace_emit_render_frame(int is_begin)
+{
+    if (is_begin)
+    {
+        FMiscTrace::OutputBeginFrame(TraceFrameType_Rendering);
+    }
+    else
+    {
+        FMiscTrace::OutputEndFrame(TraceFrameType_Rendering);
+    }
+}
+
+void utrace_emit_game_frame(int is_begin)
+{
+    if (is_begin)
+    {
+        FMiscTrace::OutputBeginFrame(TraceFrameType_Game);
+    }
+    else
+    {
+        FMiscTrace::OutputEndFrame(TraceFrameType_Game);
+    }
+}
+
+int utrace_log_enabled()
+{
+    return UE_TRACE_CHANNELEXPR_IS_ENABLED(LogChannel) ? 1: 0;
+}
+
+void utrace_log_decl_category(const void* category, utrace_string name, utrace_log_type type)
+{
+    UE_TRACE_LOG(Logging, LogCategory, LogChannel, name.len)
+        << LogCategory.CategoryPointer(category)
+        << LogCategory.DefaultVerbosity(type)
+        << LogCategory.Name(name.str, name.len);
+}
+
+void utrace_log_decl_spec(const void* logPoint, const void* category, utrace_log_type verbosity, utrace_string file, int line, const char* format)
+{
+    UInt16 FormatStringLen = UInt16(strlen(format));
+    UInt32 DataSize = file.len + (FormatStringLen * sizeof(char));
+    UE_TRACE_LOG(Logging, LogMessageSpec, LogChannel, DataSize)
+        << LogMessageSpec.LogPoint(logPoint)
+        << LogMessageSpec.CategoryPointer(category)
+        << LogMessageSpec.Line(line)
+        << LogMessageSpec.Verbosity(verbosity)
+        << LogMessageSpec.FileName(file.str, file.len)
+        << LogMessageSpec.FormatString(format, FormatStringLen);
+}
+
+void utrace_log_write_buffer(const void* logPoint, utrace_u16 encoded_arg_size, utrace_u8* encoded_arg_buffer)
+{
+    UE_TRACE_LOG(Logging, LogMessage, LogChannel)
+        << LogMessage.LogPoint(logPoint)
+        << LogMessage.Cycle(UE::Trace::Private::TimeGetTimestamp())
+        << LogMessage.FormatArgs(encoded_arg_buffer, encoded_arg_size);
 }
 
 void utrace_file_begin_open(utrace_string path)
@@ -2481,11 +2901,56 @@ void utrace_file_end_write(utrace_u64 writeHandle, utrace_u64 sizeWritten)
     FPlatformFileTrace::EndWrite(writeHandle, sizeWritten);
 }
 
+utrace_u16 utrace_counter_init(utrace_string name, utrace_counter_type type, utrace_counter_display_hint hint)
+{
+	if (!UE_TRACE_CHANNELEXPR_IS_ENABLED(CountersChannel))
+	{
+		return 0;
+	}
+	static std::atomic<UInt16> NextId;
+	UInt16 CounterId = UInt16(NextId++) + 1;
+	UInt16 NameLen = name.len;
+	UE_TRACE_LOG(Counters, Spec, CountersChannel, NameLen)
+		<< Spec.Id(CounterId)
+		<< Spec.Type(UInt8(type))
+		<< Spec.DisplayHint(UInt8(hint))
+		<< Spec.Name(name.str, NameLen);
+	return CounterId;
+}
+
+void utrace_counter_set_int(utrace_u16 counter_id, utrace_i64 value)
+{
+	if (!counter_id)
+	{
+		return;
+	}
+
+	UE_TRACE_LOG(Counters, SetValueInt, CountersChannel)
+		<< SetValueInt.Cycle(UE::Trace::Private::TimeGetTimestamp())
+		<< SetValueInt.Value(value)
+		<< SetValueInt.CounterId(counter_id);
+}
+
+void utrace_counter_set_float(utrace_u16 counter_id, double value)
+{
+	if (!counter_id)
+	{
+		return;
+	}
+	UE_TRACE_LOG(Counters, SetValueFloat, CountersChannel)
+		<< SetValueFloat.Cycle(UE::Trace::Private::TimeGetTimestamp())
+		<< SetValueFloat.Value(value)
+		<< SetValueFloat.CounterId(counter_id);
+}
+
 void utrace_module_init(utrace_string fmt, unsigned char shift)
 {
+    if (GIsModuleInitialized)
+        return;
 	UE_TRACE_LOG(Diagnostics, ModuleInit, ModuleChannel, sizeof(char) * 3)
 		<< ModuleInit.SymbolFormat(fmt.str, fmt.len)
 		<< ModuleInit.ModuleBaseShift(shift);
+    GIsModuleInitialized.store(true);
 }
 
 void utrace_module_load(utrace_string name, utrace_u64 base, utrace_u32 size, const utrace_u8* imageIdData, utrace_u32 imageIdLen)
@@ -2505,17 +2970,22 @@ void utrace_module_unload(utrace_u64 base)
 
 utrace_u32 utrace_current_callstack_id()
 {
-    using namespace UE::Trace;
-    static thread_local void* buffer[CALLSTACK_BUFFERSIZE];
-    UInt32 hash = 0;
-    auto numStacks = UE::Trace::Private::GetCallbackFrames(buffer, CALLSTACK_BUFFERSIZE, 0, hash, true);
-    void* AddressOfReturnAddress = PLATFORM_RETURN_ADDRESS_POINTER();
-    if (FBacktracer* Instance = FBacktracer::Get())
-    {
-        return Instance->GetBacktraceId(hash, numStacks, buffer);
-    }
-    return 0;
+    return GetCallstackId();
 }
+
+void utrace_mem_trace_virtual_alloc(int traced)
+{
+#if PLATFORM_ANDROID
+    int *Need = (int *)pthread_getspecific(GNeedHookMalloc);
+    if (!Need)
+    {
+        Need = (int*)malloc(sizeof(int) * 2);
+        pthread_setspecific(GNeedHookMalloc, Need);
+    }
+    *(Need + 1) = traced;
+#endif
+}
+
 ///////////////////////////////////////////////////////////////////////////
 
 #include "Runtime/TraceLog/Private/Trace/BlockPool.cpp"
@@ -2540,6 +3010,321 @@ utrace_u32 utrace_current_callstack_id()
 #if !BUILD_UTRACE_LIB
     #include "Runtime/TraceLog/Private/Trace/Detail/Android/AndroidTrace.cpp"
 #endif
+
+extern "C" {
+extern void *(*origin_mmap)(void *addr, size_t length, int prot, int flags,
+                     int fd, off_t offset);
+extern int (*origin_munmap)(void *addr, size_t length);
+
+typedef void (*Fn_mmap_hook)          (void*, void* addr, size_t size, int prot, int flags, int fd, off_t offset, void* data);
+typedef void (*Fn_munmap_hook)        (int, void* addr, size_t size, void* data);
+
+typedef void (*Fn_calloc_prehook)        (size_t n_elements, size_t elem_size, void* data);
+typedef void (*Fn_malloc_prehook)        (size_t bytes, void* data);
+typedef void (*Fn_free_prehook)          (void* mem, void* data);
+typedef void (*Fn_memalign_prehook)      (size_t alignment, size_t bytes, void* data);
+typedef void (*Fn_posix_memalign_prehook)(void** memptr, size_t alignment, size_t size, void* data);
+typedef void (*Fn_aligned_alloc_prehook) (size_t alignment, size_t size, void* data);
+typedef void (*Fn_realloc_prehook)       (void* old_mem, size_t bytes, void* data);
+
+typedef void (*Fn_calloc_hook)        (void*, size_t n_elements, size_t elem_size, void* data);
+typedef void (*Fn_malloc_hook)        (void*, size_t bytes, void* data);
+typedef void (*Fn_free_hook)          (void* ptr, void* data);
+typedef void (*Fn_memalign_hook)      (void*, size_t alignment, size_t bytes, void* data);
+typedef void (*Fn_posix_memalign_hook)(int,   void** memptr, size_t alignment, size_t size, void* data);
+typedef void (*Fn_aligned_alloc_hook) (void*, size_t alignment, size_t size, void* data);
+typedef void (*Fn_realloc_hook)       (void*, void* old_mem, size_t bytes, void* data);
+
+struct libc_memhooks {
+    void*                     usr_data = nullptr;
+
+    Fn_mmap_hook              mmap_hook = nullptr;
+    Fn_munmap_hook            munmap_hook = nullptr;
+
+    Fn_free_prehook           free_prehook = nullptr;
+    Fn_free_hook              free_hook = nullptr;
+
+    Fn_calloc_prehook         calloc_prehook = nullptr;
+    Fn_calloc_hook            calloc_hook = nullptr;
+
+    Fn_malloc_prehook         malloc_prehook = nullptr;
+    Fn_malloc_hook            malloc_hook = nullptr;
+
+    Fn_memalign_prehook       memalign_prehook = nullptr;
+    Fn_memalign_hook          memalign_hook = nullptr;
+
+    Fn_aligned_alloc_prehook  aligned_alloc_prehook = nullptr;
+    Fn_aligned_alloc_hook     aligned_alloc_hook = nullptr;
+
+    Fn_posix_memalign_prehook posix_memalign_prehook = nullptr;
+    Fn_posix_memalign_hook    posix_memalign_hook = nullptr;
+
+    Fn_realloc_prehook        realloc_prehook = nullptr;
+    Fn_realloc_hook           realloc_hook = nullptr;
+};
+
+typedef void (*Fn_register_memory_hooks)(libc_memhooks* hooks);
+};
+
+static void mmap_hook   (void*, void* addr, size_t size, int prot, int flags, int fd, off_t offset, void* data);
+static void munmap_hook (int, void* addr, size_t size, void* data);
+
+static void free_prehook  (void* mem, void* data);
+static void free_hook     (void* mem, void* data);
+static void calloc_prehook(size_t n_elements, size_t elem_size, void* data);
+static void calloc_hook   (void* ptr, size_t n_elements, size_t elem_size, void* data);
+static void malloc_prehook(size_t bytes, void* data);
+static void malloc_hook   (void* ptr, size_t bytes, void* data);
+static void memalign_prehook(size_t alignment, size_t bytes, void* data);
+static void memalign_hook(void*,size_t alignment, size_t bytes, void* data);
+//static void aligned_alloc_prehook(size_t alignment, size_t size, void* data);
+//static void aligned_alloc_hook(void*, size_t alignment, size_t size, void* data);
+static void posix_memalign_prehook(void** memptr, size_t alignment, size_t size, void* data);
+static void posix_memalign_hook(int,void** memptr, size_t alignment, size_t size, void* data);
+static void realloc_prehook(void* old_mem, size_t bytes, void* data);
+static void realloc_hook(void*, void* old_mem, size_t bytes, void* data);
+
+static thread_local bool shouldTraceVirtual = true;
+
+__attribute__ ((constructor (101))) void construct0()
+{
+    utrace_mem_init_tags();
+    char prop[128] = {0};
+    pthread_key_create(&GNeedHookMalloc, [] (void* key) {});
+    if (__system_property_get("debug.utrace.callstack.fastcapture", prop) > 0)
+    {
+        GUseFastCallStackTrace = !strcmp(prop, "true") || !strcmp(prop, "1");
+    }
+    if (__system_property_get("debug.utrace.callstack.enable", prop) > 0)
+    {
+        GCaptureCallStack = !strcmp(prop, "true") || !strcmp(prop, "1");
+    }
+
+    auto libc = dlopen("libc.so", RTLD_LAZY);
+    if (libc)
+    {
+        auto pmmap = dlsym(libc, "__private_mmap");
+        if (pmmap)
+        {
+            origin_mmap = decltype(origin_mmap)(pmmap);
+        }
+        auto pmunmap = dlsym(libc, "__private_munmap");
+        if (pmunmap)
+        {
+            origin_munmap = decltype(origin_munmap)(pmunmap);
+        }
+        auto register_memhooks = (Fn_register_memory_hooks)dlsym(libc, "__register_memory_hooks");
+        if (register_memhooks)
+        {
+            libc_memhooks hooks = {
+                nullptr,
+                mmap_hook,
+                munmap_hook,
+                free_prehook,
+                free_hook,
+                calloc_prehook,
+                calloc_hook,
+                malloc_prehook,
+                malloc_hook,
+                memalign_prehook,
+                memalign_hook,
+                memalign_prehook,
+                memalign_hook,
+                posix_memalign_prehook,
+                posix_memalign_hook,
+                realloc_prehook,
+                realloc_hook,
+            };
+            register_memhooks(&hooks);
+        }
+    }
+
+}
+
+void DisableMallocHook(bool disable)
+{
+    int *Need = (int *)pthread_getspecific(GNeedHookMalloc);
+    if (!Need)
+    {
+        Need = (int*)malloc(sizeof(int) * 2);
+        pthread_setspecific(GNeedHookMalloc, Need);
+    }
+    *Need = disable ? 1: 0;
+}
+
+bool IsMallocHookDisabled()
+{
+    int *Need = (int *)pthread_getspecific(GNeedHookMalloc);
+    if (!Need)
+    {
+        Need = (int*)malloc(sizeof(int) * 2);
+        *Need = 0;
+        *(Need + 1) = 0;
+        pthread_setspecific(GNeedHookMalloc, Need);
+    }
+    return *Need == 1;
+}
+
+FORCEINLINE bool IsMmapHookDisabled()
+{
+    int *Need = (int *)pthread_getspecific(GNeedHookMalloc);
+    if (!Need)
+    {
+        Need = (int*)malloc(sizeof(int) * 2);
+        *Need = 0;
+        *(Need + 1) = 0;
+        pthread_setspecific(GNeedHookMalloc, Need);
+    }
+    return *(Need+1) == 0;
+}
+
+extern "C" JNIEXPORT jint JNI_OnLoad(JavaVM* vm, void* reserved)
+{
+    JNIEnv* env = 0;
+    vm->AttachCurrentThread(&env, 0);
+    char prop[1024] = {0};
+    if (__system_property_get("debug.utrace.commandline", prop) > 0)
+    {
+        std::string commandline(prop);
+        auto read_app_name = []() -> std::string {
+            int fd = open("/proc/self/cmdline", O_RDONLY|O_SYNC);
+            char buffer[256] = {0};
+            size_t len = read(fd, buffer, 256);
+            close(fd);
+            return std::string(buffer, len);
+        };
+        auto app_name = read_app_name();
+        // read app name "/proc/self/cmdline"
+        utrace_initialize_main_thread(
+        { app_name.c_str(), (utrace_u32)app_name.length() },
+        MAKE_UTRACE_STR("unknown"),
+        { commandline.c_str(), (utrace_u32)commandline.size() },
+        MAKE_UTRACE_STR("unkown"),
+        0,
+        UTRACE_TARGET_TYPE_GAME,
+        UTRACE_BUILD_CONFIGURATION_DEVELOPMENT,
+        0
+        );
+    }
+    utrace_mem_init();
+    utrace_module_init(MAKE_UTRACE_STR("so"), 0);
+    auto libdl = dlopen("libdl.so", RTLD_GLOBAL);
+    Fn_dl_register_notification dl_register_notification = (Fn_dl_register_notification)dlsym(libdl, "dl_register_notification");
+    if (dl_register_notification)
+    {
+        dl_register_notification(&FTraceAuxiliaryImpl::OnDlNotify, nullptr);
+    }
+    dl_iterate_phdr(&FTraceAuxiliaryImpl::OnDlIterate, nullptr);
+
+    return JNI_VERSION_1_6;
+}
+
+void mmap_hook   (void* ptr, void* addr, size_t size, int prot, int flags, int fd, off_t offset, void* data)
+{
+    if (!GTraceAllowed || IsMmapHookDisabled())
+    {
+        return;
+    }
+    if (fd == -1 && offset == 0)
+    {
+        FMemScope scope(MAKE_UTRACE_STR("VirtualAlloc"));
+        /*utrace_u32 callStackId = */utrace_mem_alloc(UInt64(ptr), size, 0, 0);
+        //utrace_mem_mark_alloc_as_heap_with_callstack(UInt64(ptr), 0, 0, callStackId);
+    }
+}
+
+void munmap_hook (int ret, void* addr, size_t size, void* data)
+{
+    if (!GTraceAllowed || IsMmapHookDisabled())
+    {
+        return;
+    }
+    utrace_u32 callStackId = utrace_mem_free((UInt64)addr, 0);
+    //utrace_mem_unmark_alloc_as_heap_with_callstack((UInt64)addr, 0, callStackId);
+}
+
+void free_prehook(void* mem, void* data)
+{
+    utrace_mem_trace_virtual_alloc(0);
+}
+
+// TODO: should use sampling algorithm
+
+void free_hook(void* mem, void* data)
+{
+    if (!IsMallocHookDisabled())
+    {
+        utrace_mem_free((utrace_u64)mem, libcHeapId);
+    }
+    utrace_mem_trace_virtual_alloc(1);
+}
+
+void calloc_prehook(size_t n_elements, size_t elem_size, void* data)
+{
+    utrace_mem_trace_virtual_alloc(0);
+}
+
+void calloc_hook(void* ptr, size_t n_elements, size_t elem_size, void* data)
+{
+    FMemScope scope(MAKE_UTRACE_STR("LibC"));
+    utrace_mem_alloc((utrace_u64)ptr, n_elements*elem_size, 0, libcHeapId);
+    utrace_mem_trace_virtual_alloc(1);
+}
+
+void malloc_prehook(size_t bytes, void*)
+{
+    utrace_mem_trace_virtual_alloc(0);
+}
+
+void malloc_hook(void* ptr, size_t bytes, void*)
+{
+    if (!IsMallocHookDisabled())
+    {
+        FMemScope scope(MAKE_UTRACE_STR("LibC"));
+        utrace_mem_alloc((utrace_u64)ptr, bytes, 0, libcHeapId);
+    }
+    utrace_mem_trace_virtual_alloc(1);
+}
+
+void memalign_prehook(size_t alignment, size_t bytes, void* data)
+{
+    utrace_mem_trace_virtual_alloc(0);
+}
+
+void memalign_hook(void* ptr,size_t alignment, size_t bytes, void* data)
+{
+    FMemScope scope(MAKE_UTRACE_STR("LibC"));
+    utrace_mem_alloc((utrace_u64)ptr, bytes, alignment, libcHeapId);
+    utrace_mem_trace_virtual_alloc(1);
+}
+
+void posix_memalign_prehook(void** memptr, size_t alignment, size_t size, void* data)
+{
+    utrace_mem_trace_virtual_alloc(0);
+}
+
+void posix_memalign_hook(int, void** ptr, size_t alignment, size_t size, void* data)
+{
+    if (ptr)
+    {
+        FMemScope scope(MAKE_UTRACE_STR("LibC"));
+        utrace_mem_alloc((utrace_u64)*ptr, size, alignment, libcHeapId);
+    }
+    utrace_mem_trace_virtual_alloc(1);
+}
+
+void realloc_prehook(void* old_mem, size_t bytes, void* data)
+{
+    utrace_mem_trace_virtual_alloc(0);
+    utrace_mem_realloc_free((utrace_u64)old_mem, libcHeapId);
+}
+
+void realloc_hook(void* ptr, void* old_mem, size_t bytes, void* data)
+{
+    FMemScope scope(MAKE_UTRACE_STR("LibC"));
+    utrace_mem_realloc_alloc((utrace_u64)ptr, bytes, 0, libcHeapId);
+    utrace_mem_trace_virtual_alloc(1);
+}
 #else
 #endif
 

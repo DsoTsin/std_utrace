@@ -38,7 +38,7 @@ if (ANDROID)
     list(APPEND XHOOK_SRCS 
         Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xh_core.c
         Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xh_elf.c
-        Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xh_jni.c
+        #Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xh_jni.c
         Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xh_log.c
         Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xh_util.c
         Runtime/TraceLog/Private/Trace/Detail/Android/xhook/xh_version.c
@@ -50,11 +50,40 @@ endif (ANDROID)
 
 source_group(Profiler FILES ${PROFILER_SRCS})
 
+set(mi_sources
+    mimalloc/src/alloc.c
+    mimalloc/src/alloc-aligned.c
+    mimalloc/src/alloc-posix.c
+    mimalloc/src/arena.c
+    mimalloc/src/bitmap.c
+    mimalloc/src/heap.c
+    mimalloc/src/init.c
+    mimalloc/src/options.c
+    mimalloc/src/os.c
+    mimalloc/src/page.c
+    mimalloc/src/random.c
+    mimalloc/src/segment.c
+    mimalloc/src/segment-map.c
+    mimalloc/src/stats.c
+    mimalloc/src/prim/prim.c)
+
+source_group(Mimalloc FILES ${mi_sources})
+
 add_library(unreal_trace SHARED ${PROFILER_SRCS})
 
 if (ANDROID)
-    target_sources(unreal_trace PRIVATE ${XHOOK_SRCS})
-    target_link_libraries(unreal_trace PUBLIC log)
+    target_sources              (unreal_trace PRIVATE ${XHOOK_SRCS} ${mi_sources})
+    target_link_libraries       (unreal_trace PUBLIC  log)
+    target_link_options         (unreal_trace PRIVATE "-Wl,--exclude-libs,ALL" "-whyload")
+    target_compile_options      (unreal_trace PRIVATE "-fvisibility=hidden")
+    target_compile_definitions  (unreal_trace PRIVATE "LZ4LIB_VISIBILITY=" "XHOOK_EXPORT=")
 endif (ANDROID)
 
-target_compile_definitions(unreal_trace PRIVATE BUILD_UTRACE_LIB=1)
+if (WIN32)
+    set_target_properties       (unreal_trace PROPERTIES 
+        MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+#    target_compile_options      (unreal_trace PUBLIC "/Zc:__cplusplus")
+endif(WIN32)
+
+target_compile_definitions(unreal_trace PRIVATE BUILD_UTRACE_LIB=1 MI_TLS_RECURSE_GUARD MI_TLS_PTHREAD)
+target_include_directories(unreal_trace PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/mimalloc/include)

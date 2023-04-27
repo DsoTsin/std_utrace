@@ -62,13 +62,13 @@ void ThreadDestroy(UPTRINT Handle)
 
 size_t GetCallbackFrames(void** outTrace, size_t maxDepth, size_t skipInitial, UInt32& Hash, bool fastCapture)
 {
-	if (fastCapture)
+	//if (fastCapture)
+	//{
+	//	PLATFORM_RETURN_ADDRESS_POINTER();
+	//}
+	//else
 	{
-		PLATFORM_RETURN_ADDRESS_POINTER();
-	}
-	else
-	{
-		return RtlCaptureStackBackTrace(skipInitial, maxDepth, (void**)outTrace, (PDWORD)&Hash);
+		return RtlCaptureStackBackTrace((DWORD)skipInitial, (DWORD)maxDepth, (void**)outTrace, (PDWORD)&Hash);
 	}
 }
 

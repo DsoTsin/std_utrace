@@ -39,6 +39,9 @@
 #include "xh_version.h"
 #include "xh_core.h"
 
+#include "mimalloc.h"
+#include "mimalloc-override.h"
+
 #define XH_CORE_DEBUG 0
 
 //registered hook info collection

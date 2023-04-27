@@ -1,7 +1,9 @@
 #include "Prefix.h"
 #include <stdarg.h>
 #include "../TraceLog/Private/Trace/Platform.h"
-
+#if PLATFORM_ANDROID
+#include "mimalloc-new-delete.h"
+#endif
 dynamic_array<core::string> g_commandArgs;
 
 namespace core 
@@ -100,7 +102,7 @@ bool ParseARGV(const char * arg, core::string& value)
 	auto expArg = core::FormatString("-%s=", arg);
 	for (auto& commandArg: g_commandArgs)
 	{
-		if (!strncmp(expArg.c_str(), *commandArg, expArg.length()))
+		if (!strncmp(expArg.c_str(), *commandArg, expArg.length()) || !strnicmp(expArg.c_str(), *commandArg, expArg.length()) )
 		{
 			value = core::string(*commandArg + expArg.length(), commandArg.length() - expArg.length());
 			return true;
@@ -115,7 +117,7 @@ bool HasARGV(const char* arg)
 	auto expArg2 = expArg + "=";
 	for (auto& commandArg: g_commandArgs)
 	{
-		if (expArg == commandArg || !strncmp(expArg2.c_str(), *commandArg, expArg2.length()))
+		if (expArg == commandArg || !strncmp(expArg2.c_str(), *commandArg, expArg2.length()) || !strnicmp(expArg.c_str(), *commandArg, expArg.length()))
 		{
 			return true;
 		}
@@ -204,3 +206,52 @@ void Thread::WaitForExit()
 		UE::Trace::Private::ThreadJoin(m_handle);
 	}
 }
+
+#if PLATFORM_ANDROID
+extern "C" {
+#ifdef malloc
+#undef malloc
+#endif
+
+#ifdef free
+#undef free
+#endif
+
+#ifdef calloc
+#undef calloc
+#endif
+
+#ifdef realloc
+#undef realloc
+#endif
+
+#ifdef posix_memalign
+#undef posix_memalign
+#endif
+
+	void* malloc(size_t size)
+	{
+		return mi_malloc(size);
+	}
+
+	void* calloc(size_t se, size_t count)
+	{
+		return mi_calloc(se, count);
+	}
+
+	void* realloc(void* p, size_t newsize)
+	{
+		return mi_realloc(p, newsize);
+	}
+
+	int posix_memalign(void** p, size_t alignment, size_t size)
+	{
+		return mi_posix_memalign(p, alignment, size);
+	}
+
+	void free(void* ptr)
+	{
+		mi_free(ptr);
+	}
+}
+#endif

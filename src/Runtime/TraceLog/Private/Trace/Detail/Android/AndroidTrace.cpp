@@ -12,7 +12,6 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <errno.h>
 #include <unwind.h>
 
 #if defined(__arm__) && defined(__GNUC__) && !defined(__clang__)
@@ -114,6 +113,7 @@ FORCEINLINE uintptr_t GetStackEnd() {
     // acceptable performance.
     // For all other threads pthread_getattr_np() is fast enough as it just reads
     // values from its pthread_t argument.
+	DisableMallocHook(true);
     static uintptr_t main_stack_end = 0;
     bool is_main_thread = getpid() == gettid();
     if (is_main_thread && main_stack_end) {
@@ -132,13 +132,24 @@ FORCEINLINE uintptr_t GetStackEnd() {
     if (is_main_thread) {
         main_stack_end = stack_end;
     }
+
+	DisableMallocHook(false);
     return stack_end;  // 0 in case of error
 }
 
-FORCEINLINE size_t TraceStackFramePointers(void** out_trace, size_t max_depth, size_t skip_initial) {
+template<typename Tval>
+struct AddressHash {
+	size_t operator()(const Tval* val) const {
+		static const size_t shift = (size_t)log2(1 + sizeof(Tval));
+		return (size_t)(val) >> shift;
+	}
+};
+
+FORCEINLINE size_t TraceStackFramePointers(void** out_trace, size_t max_depth, uint32& Hash, size_t skip_initial) {
     // Usage of __builtin_frame_address() enables frame pointers in this
     // function even if they are not enabled globally. So 'fp' will always
     // be valid.
+	uint64_t Hash64 = 0;
     uintptr_t fp = reinterpret_cast<uintptr_t>(PLATFORM_RETURN_ADDRESS_POINTER()) - kStackFrameAdjustment;
     uintptr_t stack_end = GetStackEnd();
     size_t depth = 0;
@@ -146,7 +157,10 @@ FORCEINLINE size_t TraceStackFramePointers(void** out_trace, size_t max_depth, s
         if (skip_initial != 0) {
             skip_initial--;
         } else {
-            out_trace[depth++] = reinterpret_cast<void*>(GetStackFramePC(fp));
+			void* addr = reinterpret_cast<void*>(GetStackFramePC(fp));
+            out_trace[depth++] = addr;
+			Hash64 += (uint64_t)addr;
+			Hash64 *= 0x30be8efa499c249dull;
         }
         uintptr_t next_fp = GetNextStackFrame(fp);
         if (IsStackFrameValid(next_fp, fp, stack_end)) {
@@ -156,11 +170,13 @@ FORCEINLINE size_t TraceStackFramePointers(void** out_trace, size_t max_depth, s
         // Failed to find next frame.
         break;
     }
+	Hash = (UInt32)Hash64;
     return depth;
 }
 
 struct TraceState {
 	void** current;
+	uint64_t hash;
 	void** end;
 };
 
@@ -172,7 +188,10 @@ static _Unwind_Reason_Code TraceUnwind(struct _Unwind_Context* context, void* ar
 		if (state->current == state->end) {
 			return _URC_END_OF_STACK;
 		} else {
-			*state->current++ = reinterpret_cast<void*>(pc);
+			void* addr = reinterpret_cast<void*>(pc);
+			*state->current++ = addr;
+			state->hash += (uint64_t)addr;
+			state->hash *= 0x30be8efa499c249dull;
 		}
 	}
 	return _URC_NO_REASON;
@@ -182,12 +201,13 @@ size_t GetCallbackFrames(void** out_trace, size_t max_depth, size_t skip_initial
 {
     if (fastCapture)
 	{
-		return TraceStackFramePointers(out_trace, max_depth, skip_initial);
+		return TraceStackFramePointers(out_trace, max_depth, Hash, skip_initial);
 	}
     else
 	{
-		TraceState state = {out_trace, out_trace + max_depth};
+		TraceState state = {out_trace, 0, out_trace + max_depth};
 		_Unwind_Backtrace(TraceUnwind, &state);
+		Hash = (UInt32)state.hash;
 		return state.current - out_trace;
 	}
 }

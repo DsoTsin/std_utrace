@@ -4,9 +4,6 @@
 #include "Runtime/TraceLog/Public/Trace/Trace.h"
 #include "Runtime/TraceLog/Public/Trace/Detail/Channel.h"
 #include "Runtime/TraceLog/Public/Trace/Detail/Channel.inl"
-//#include "Runtime/Utilities/dynamic_array.h"
-//#include "Runtime/Core/Containers/StringRef.h"
-//#include "Runtime/Jobs/BackgroundJobQueue.h"
 
 enum ETraceFrameType
 {
@@ -198,8 +195,8 @@ struct FMiscTrace
     //    }
     //}
 
-    static void OutputBeginFrame(ETraceFrameType FrameType);
-    static void OutputEndFrame(ETraceFrameType FrameType);
+    static FORCEINLINE void OutputBeginFrame(ETraceFrameType FrameType);
+    static FORCEINLINE void OutputEndFrame(ETraceFrameType FrameType);
 	static void OutputScreenshot(const core::string_ref& Name, uint64_t Cycle, uint32_t Width, uint32_t Height, UInt8* pngData, size_t pngSize);
 	static bool ShouldTraceScreenshot();
 
@@ -260,151 +257,21 @@ namespace ELogVerbosity
 static_assert(ELogVerbosity::NumVerbosity - 1 < ELogVerbosity::VerbosityMask, "Bad verbosity mask.");
 static_assert(!(ELogVerbosity::VerbosityMask& ELogVerbosity::BreakOnLog), "Bad verbosity mask.");
 
-struct FFormatArgsTrace
-{
-    enum EFormatArgTypeCode
-    {
-        FormatArgTypeCode_CategoryBitShift = 6,
-        FormatArgTypeCode_SizeBitMask = (1 << FormatArgTypeCode_CategoryBitShift) - 1,
-        FormatArgTypeCode_CategoryBitMask = ~FormatArgTypeCode_SizeBitMask,
-        FormatArgTypeCode_CategoryInteger = 1 << FormatArgTypeCode_CategoryBitShift,
-        FormatArgTypeCode_CategoryFloatingPoint = 2 << FormatArgTypeCode_CategoryBitShift,
-        FormatArgTypeCode_CategoryString = 3 << FormatArgTypeCode_CategoryBitShift,
-    };
-
-    template <int BufferSize, typename... Types>
-    static uint16_t EncodeArguments(uint8_t(&Buffer)[BufferSize], Types... FormatArgs)
-    {
-        static_assert(BufferSize < 65536, "Maximum buffer size of 16 bits exceeded");
-        uint64_t FormatArgsCount = sizeof...(FormatArgs);
-        if (FormatArgsCount >= 256)
-        {
-            // Nope
-            return 0;
-        }
-        uint64_t FormatArgsSize = 1 + FormatArgsCount + GetArgumentsEncodedSize(FormatArgs...);
-        if (FormatArgsSize > BufferSize)
-        {
-            // Nope
-            return 0;
-        }
-        uint8_t* TypeCodesBufferPtr = Buffer;
-        *TypeCodesBufferPtr++ = uint8_t(FormatArgsCount);
-        uint8_t* PayloadBufferPtr = TypeCodesBufferPtr + FormatArgsCount;
-        EncodeArgumentsInternal(TypeCodesBufferPtr, PayloadBufferPtr, FormatArgs...);
-        Assert(PayloadBufferPtr - Buffer == FormatArgsSize);
-        return (uint16_t)FormatArgsSize;
-    }
-
-private:
-
-    template <typename T>
-    constexpr static int GetArgumentEncodedSize(T Argument)
-    {
-        return (int)sizeof(T);
-    }
-
-    static int GetArgumentEncodedSize(const char* Argument)
-    {
-        if (Argument != nullptr)
-        {
-            return int(strlen(Argument) + 1);
-        }
-        else
-        {
-            return 1;
-        }
-    }
-
-    constexpr static int GetArgumentsEncodedSize()
-    {
-        return 0;
-    }
-
-    template <typename T, typename... Types>
-    static int GetArgumentsEncodedSize(T Head, Types... Tail)
-    {
-        return GetArgumentEncodedSize(Head) + GetArgumentsEncodedSize(Tail...);
-    }
-
-    template <typename T>
-    static void EncodeArgumentInternal(uint8_t*& TypeCodesPtr, uint8_t*& PayloadPtr, T Argument)
-    {
-        *TypeCodesPtr++ = FormatArgTypeCode_CategoryInteger | sizeof(T);
-
-#if PLATFORM_SUPPORTS_UNALIGNED_LOADS
-        * reinterpret_cast<T*>(PayloadPtr) = Argument;
-#else
-        // For ARM targets, it's possible that using __packed here would be preferable
-        // but I have not checked the codegen -- it's possible that the compiler generates
-        // the same code for this fixed size memcpy
-        memcpy(PayloadPtr, &Argument, sizeof Argument);
-#endif
-
-        PayloadPtr += sizeof(T);
-    }
-
-    static void EncodeArgumentInternal(uint8_t*& TypeCodesPtr, uint8_t*& PayloadPtr, float Argument)
-    {
-        *TypeCodesPtr++ = FormatArgTypeCode_CategoryFloatingPoint | sizeof(float);
-
-#if PLATFORM_SUPPORTS_UNALIGNED_LOADS
-        * reinterpret_cast<T*>(PayloadPtr) = Argument;
-#else
-        // For ARM targets, it's possible that using __packed here would be preferable
-        // but I have not checked the codegen -- it's possible that the compiler generates
-        // the same code for this fixed size memcpy
-        memcpy(PayloadPtr, &Argument, sizeof Argument);
-#endif
-
-        PayloadPtr += sizeof(float);
-    }
-
-    static void EncodeArgumentInternal(uint8_t*& TypeCodesPtr, uint8_t*& PayloadPtr, const char* Argument)
-    {
-        *TypeCodesPtr++ = FormatArgTypeCode_CategoryString | 1;
-        if (Argument != nullptr)
-        {
-            uint16_t Length = (uint16_t)((strlen(Argument) + 1));
-            memcpy(PayloadPtr, Argument, Length);
-            PayloadPtr += Length;
-        }
-        else
-        {
-            char Terminator{ 0 };
-            memcpy(PayloadPtr, &Terminator, 1);
-            PayloadPtr += 1;
-        }
-    }
-
-    constexpr static void EncodeArgumentsInternal(uint8_t*& TypeCodesPtr, uint8_t*& PayloadPtr)
-    {
-    }
-
-    template <typename T, typename... Types>
-    static void EncodeArgumentsInternal(uint8_t*& ArgDescriptorsPtr, uint8_t*& ArgPayloadPtr, T Head, Types... Tail)
-    {
-        EncodeArgumentInternal(ArgDescriptorsPtr, ArgPayloadPtr, Head);
-        EncodeArgumentsInternal(ArgDescriptorsPtr, ArgPayloadPtr, Tail...);
-    }
-};
-
 struct FLogTrace
 {
-    static void OutputLogCategory(const void* LogPoint, const char* Name, ELogVerbosity::Type DefaultVerbosity);
-    static void OutputLogMessageSpec(const void* LogPoint, const void* Category, ELogVerbosity::Type Verbosity, const char* File, int32_t Line, const char* Format);
+    static FORCENOINLINE void OutputLogCategory(const void* LogPoint, const char* Name, ELogVerbosity::Type DefaultVerbosity);
+    static FORCENOINLINE void OutputLogMessageSpec(const void* LogPoint, const void* Category, ELogVerbosity::Type Verbosity, const char* File, int32_t Line, const char* Format);
 
     template <typename... Types>
     FORCENOINLINE static void OutputLogMessage(const void* LogPoint, Types... FormatArgs)
     {
         UInt8 FormatArgsBuffer[3072];
-        UInt16 FormatArgsSize = FFormatArgsTrace::EncodeArguments(FormatArgsBuffer, FormatArgs...);
+        UInt16 FormatArgsSize = utrace::FFormatArgsTrace::EncodeArguments(FormatArgsBuffer, FormatArgs...);
         if (FormatArgsSize)
         {
             OutputLogMessageInternal(LogPoint, FormatArgsSize, FormatArgsBuffer);
         }
     }
-private:
     static void OutputLogMessageInternal(const void* LogPoint, uint16_t EncodedFormatArgsSize, uint8_t* EncodedFormatArgs);
 };
 #endif

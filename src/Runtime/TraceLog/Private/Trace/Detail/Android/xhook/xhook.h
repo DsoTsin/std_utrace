@@ -28,7 +28,9 @@
 extern "C" {
 #endif
 
+#ifndef XHOOK_EXPORT
 #define XHOOK_EXPORT __attribute__((visibility("default")))
+#endif
 
 int xhook_register(const char *pathname_regex_str, const char *symbol,
                    void *new_func, void **old_func) XHOOK_EXPORT;
