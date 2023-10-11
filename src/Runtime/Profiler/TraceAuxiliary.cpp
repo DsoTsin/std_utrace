@@ -129,6 +129,7 @@ UE_TRACE_EVENT_BEGIN(Diagnostics, ModuleLoad, NoSync|Important)
 	UE_TRACE_EVENT_FIELD(UE::Trace::AnsiString, Name)
 	UE_TRACE_EVENT_FIELD(UInt64, Base)
 	UE_TRACE_EVENT_FIELD(UInt32, Size)
+	UE_TRACE_EVENT_FIELD(UInt64, Offset) // Mapped shared library file offset
     // Platform specific id for this image, used to match debug files were available
 	UE_TRACE_EVENT_FIELD(UInt8[], ImageId)
 UE_TRACE_EVENT_END()
@@ -2573,7 +2574,7 @@ void FTraceAuxiliaryImpl::OnDlNotify(int flag, const char* so_name, const char* 
             if (flag == 1)
             {
                 FMemScope scope(MAKE_UTRACE_STR("Program"));
-                utrace_module_load({ so_name, (utrace_u32)strlen(so_name) }, (utrace_u64)first, (utrace_u32)phdr[h].p_memsz, (UInt8*)realpath, (utrace_u32)strlen(realpath));
+                utrace_module_load2({ so_name, (utrace_u32)strlen(so_name) }, (utrace_u64)first, (utrace_u32)phdr[h].p_memsz, (utrace_u64)phdr[h].p_offset, (UInt8*)realpath, (utrace_u32)strlen(realpath));
                 /*auto callstack = */utrace_mem_alloc((utrace_u64)first, (utrace_u32)phdr[h].p_memsz, 0, programHeapId);
                 //utrace_mem_mark_alloc_as_heap_with_callstack((utrace_u64)first, programHeapId, 0, callstack);
                 //utrace_mem_alloc_with_callstack((utrace_u64)first, (utrace_u32)phdr[h].p_memsz, 0, 0, callstack);
@@ -2614,7 +2615,7 @@ int FTraceAuxiliaryImpl::OnDlIterate(struct dl_phdr_info* info, size_t size, voi
             (info->dlpi_phdr[h].p_flags)) {
             FMemScope scope(MAKE_UTRACE_STR("Program"));
             const uintptr_t  first = info->dlpi_addr + info->dlpi_phdr[h].p_vaddr;
-            utrace_module_load({ name, (utrace_u32)strlen(name) }, (utrace_u64)first, (utrace_u32)info->dlpi_phdr[h].p_memsz , (UInt8*)(realpath? realpath: NULL), realpath? (unsigned int)strlen(realpath): 0);
+            utrace_module_load2({ name, (utrace_u32)strlen(name) }, (utrace_u64)first, (utrace_u32)info->dlpi_phdr[h].p_memsz, (utrace_u64)info->dlpi_phdr[h].p_offset, (UInt8*)(realpath? realpath: NULL), realpath? (unsigned int)strlen(realpath): 0);
             /*auto callstack = */utrace_mem_alloc((utrace_u64)first, (utrace_u32)info->dlpi_phdr[h].p_memsz, 0, programHeapId);
             //utrace_mem_mark_alloc_as_heap_with_callstack((utrace_u64)first, programHeapId, 0, callstack);
             //utrace_mem_alloc_with_callstack((utrace_u64)first, (utrace_u32)info->dlpi_phdr[h].p_memsz, 0, 0, callstack);
@@ -2959,6 +2960,16 @@ void utrace_module_load(utrace_string name, utrace_u64 base, utrace_u32 size, co
 		<< ModuleLoad.Name(name.str, name.len)
 		<< ModuleLoad.Base(base)
 		<< ModuleLoad.Size(size)
+		<< ModuleLoad.ImageId(imageIdData, imageIdLen);
+}
+
+void utrace_module_load2(utrace_string name, utrace_u64 base, utrace_u32 size, utrace_u64 fileOffset, const utrace_u8* imageIdData, utrace_u32 imageIdLen)     
+{
+	UE_TRACE_LOG(Diagnostics, ModuleLoad, ModuleChannel, name.len + imageIdLen)
+		<< ModuleLoad.Name(name.str, name.len)
+		<< ModuleLoad.Base(base)
+		<< ModuleLoad.Size(size)
+        << ModuleLoad.Offset(fileOffset)
 		<< ModuleLoad.ImageId(imageIdData, imageIdLen);
 }
 

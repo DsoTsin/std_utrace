@@ -202,6 +202,7 @@ extern "C" {
 
 	UTRACE_API void	utrace_module_init(utrace_string fmt, unsigned char shift);
 	UTRACE_API void	utrace_module_load(utrace_string name, utrace_u64 base, utrace_u32 size, const utrace_u8* imageIdData, utrace_u32 imageIdLen);
+	UTRACE_API void	utrace_module_load2(utrace_string name, utrace_u64 base, utrace_u32 size, utrace_u64 fileOffset, const utrace_u8* imageIdData, utrace_u32 imageIdLen);
 	UTRACE_API void	utrace_module_unload(utrace_u64 base);
 
 	UTRACE_API void	utrace_vulkan_set_render_pass_name(utrace_u64 render_pass, utrace_string name);
